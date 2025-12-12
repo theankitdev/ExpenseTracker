@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import API from "../axios/axios.js";
 import AddExpenseModal from "../components/AddExpenseModal.jsx";
 import { 
@@ -20,18 +20,54 @@ export default function Dashboard() {
   const [analytics, setAnalytics] = useState({});
   const [showAdd, setShowAdd] = useState(false);
   const [loading, setLoading] = useState(true);
+
+  // top-level quick select filter
   const [filter, setFilter] = useState("all");
   const [timeRange, setTimeRange] = useState("month");
 
-  const loadData = async () => {
+  // filter panel state — now anchored in Recent Expenses header
+  const [showFilterPanel, setShowFilterPanel] = useState(false);
+  const [panelCategory, setPanelCategory] = useState("all");
+  const [panelStartDate, setPanelStartDate] = useState("");
+  const [panelEndDate, setPanelEndDate] = useState("");
+  const filterAreaRef = useRef(null);
+
+  // category list helper
+  const categoryList = () => {
+    const fromAnalytics = analytics?.categoryWise ? Object.keys(analytics.categoryWise) : [];
+    const fromExpenses = Array.from(new Set(expenses.map(e => e.category).filter(Boolean)));
+    return Array.from(new Set([...fromAnalytics, ...fromExpenses]));
+  };
+
+  const computeAnalyticsFrom = (expList) => {
+    const totalSpend = expList.reduce((acc, e) => acc + (Number(e.amount) || 0), 0);
+    const categoryWise = {};
+    expList.forEach(e => {
+      const cat = e.category || "other";
+      categoryWise[cat] = (categoryWise[cat] || 0) + (Number(e.amount) || 0);
+    });
+    return { totalSpend, categoryWise };
+  };
+
+  // loadData with optional query params
+  const loadData = async (opts = {}) => {
     setLoading(true);
     try {
-      const [exp, ana] = await Promise.all([
-        API.get("/expenses"),
-        API.get("/expenses/analytics")
+      const params = {};
+      if (opts.category && opts.category !== "all") params.category = opts.category;
+      if (opts.startDate) params.startDate = opts.startDate;
+      if (opts.endDate) params.endDate = opts.endDate;
+
+      const [expRes, anaRes] = await Promise.all([
+        API.get("/expenses", { params }),
+        API.get("/expenses/analytics", { params }).catch(() => null)
       ]);
-      setExpenses(exp.data);
-      setAnalytics(ana.data);
+
+      const expData = expRes?.data || [];
+      setExpenses(expData);
+
+      if (anaRes?.data) setAnalytics(anaRes.data);
+      else setAnalytics(computeAnalyticsFrom(expData));
     } catch (error) {
       console.error("Failed to load data:", error);
     } finally {
@@ -41,9 +77,38 @@ export default function Dashboard() {
 
   useEffect(() => {
     loadData();
-  }, []);
 
-  // Get category colors
+    // close panel when clicking outside
+    const handleDocClick = (e) => {
+      if (showFilterPanel && filterAreaRef.current && !filterAreaRef.current.contains(e.target)) {
+        setShowFilterPanel(false);
+      }
+    };
+    document.addEventListener("click", handleDocClick);
+    return () => document.removeEventListener("click", handleDocClick);
+  }, []); // eslint-disable-line
+
+  // apply & clear
+  const applyPanelFilters = () => {
+    setFilter(panelCategory || "all");
+    loadData({
+      category: panelCategory,
+      startDate: panelStartDate || undefined,
+      endDate: panelEndDate || undefined
+    });
+    setShowFilterPanel(false);
+  };
+
+  const clearPanelFilters = () => {
+    setPanelCategory("all");
+    setPanelStartDate("");
+    setPanelEndDate("");
+    setFilter("all");
+    loadData();
+    setShowFilterPanel(false);
+  };
+
+  // helpers: colors & formatting
   const getCategoryColor = (category) => {
     const colors = {
       food: "bg-orange-500",
@@ -58,7 +123,6 @@ export default function Dashboard() {
     return colors[category?.toLowerCase()] || "bg-gray-500";
   };
 
-  // Format currency
   const formatCurrency = (amount) => {
     return new Intl.NumberFormat('en-IN', {
       style: 'currency',
@@ -67,8 +131,8 @@ export default function Dashboard() {
     }).format(amount);
   };
 
-  // Format date
   const formatDate = (dateString) => {
+    if (!dateString) return "";
     return new Date(dateString).toLocaleDateString('en-IN', {
       day: 'numeric',
       month: 'short',
@@ -76,12 +140,9 @@ export default function Dashboard() {
     });
   };
 
-  // Calculate percentage change (mock)
-  const getPercentageChange = () => {
-    return -12; // This would come from your analytics API
-  };
+  const getPercentageChange = () => -12;
 
-  // Filter expenses by time range
+  // filteredExpenses by quick select
   const filteredExpenses = expenses.filter(expense => {
     if (filter === "all") return true;
     return expense.category === filter;
@@ -98,7 +159,7 @@ export default function Dashboard() {
           </div>
           <div className="flex items-center space-x-3 mt-4 md:mt-0">
             <button
-              onClick={() => loadData()}
+              onClick={() => loadData({ category: filter !== "all" ? filter : undefined })}
               className="flex items-center px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
             >
               <RefreshCw className="w-4 h-4 mr-2" />
@@ -135,7 +196,6 @@ export default function Dashboard() {
 
       {/* Stats Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-        {/* Total Spent Card */}
         <div className="bg-white rounded-xl p-6 shadow-md border border-gray-100">
           <div className="flex items-center justify-between mb-4">
             <div className="p-3 bg-blue-100 rounded-lg">
@@ -156,7 +216,6 @@ export default function Dashboard() {
           <p className="text-gray-600 text-sm">Total Spent</p>
         </div>
 
-        {/* Average Daily Spend Card */}
         <div className="bg-white rounded-xl p-6 shadow-md border border-gray-100">
           <div className="p-3 bg-orange-100 rounded-lg mb-4 w-fit">
             <TrendingUp className="w-6 h-6 text-orange-600" />
@@ -167,7 +226,6 @@ export default function Dashboard() {
           <p className="text-gray-600 text-sm">Avg. Daily Spend</p>
         </div>
 
-        {/* Total Expenses Card */}
         <div className="bg-white rounded-xl p-6 shadow-md border border-gray-100">
           <div className="p-3 bg-purple-100 rounded-lg mb-4 w-fit">
             <PieChart className="w-6 h-6 text-purple-600" />
@@ -178,7 +236,6 @@ export default function Dashboard() {
           <p className="text-gray-600 text-sm">Total Expenses</p>
         </div>
 
-        {/* Most Spent Category Card */}
         <div className="bg-white rounded-xl p-6 shadow-md border border-gray-100">
           <div className="p-3 bg-green-100 rounded-lg mb-4 w-fit">
             <Tag className="w-6 h-6 text-green-600" />
@@ -193,20 +250,35 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* Category Summary */}
         <div className="lg:col-span-2">
-          <div className="bg-white rounded-xl shadow-md border border-gray-100 p-6">
+          <div className="bg-white rounded-xl shadow-md border border-gray-100 p-6 relative">
             <div className="flex items-center justify-between mb-6">
-              <div>
-                <h2 className="text-xl font-bold text-gray-900">Category Breakdown</h2>
-                <p className="text-gray-600 text-sm">Distribution by categories</p>
+              <div className="flex items-center space-x-3">
+                <div>
+                  <h2 className="text-xl font-bold text-gray-900">Category Breakdown</h2>
+                  <p className="text-gray-600 text-sm">Distribution by categories</p>
+                </div>
+
+                {/* Compact "All Categories" select moved into Category Breakdown header (swapped) */}
+                <div>
+                  <select
+                    value={filter}
+                    onChange={(e) => setFilter(e.target.value)}
+                    className="appearance-none px-3 py-1 text-sm border border-gray-300 rounded-lg bg-white hover:bg-gray-50 focus:outline-none"
+                  >
+                    <option value="all">All Categories</option>
+                    {categoryList().map(cat => (
+                      <option key={cat} value={cat} className="capitalize">{cat}</option>
+                    ))}
+                  </select>
+                </div>
               </div>
-              <button className="flex items-center text-sm text-gray-600 hover:text-gray-900">
-                <Filter className="w-4 h-4 mr-1" />
-                Filter
-              </button>
+
+              {/* empty spacer to keep layout balanced */}
+              <div />
             </div>
 
             {analytics.categoryWise && Object.entries(analytics.categoryWise).map(([cat, amt]) => {
-              const percentage = ((amt / analytics.totalSpend) * 100).toFixed(1);
+              const percentage = analytics.totalSpend ? ((amt / analytics.totalSpend) * 100).toFixed(1) : 0;
               return (
                 <div key={cat} className="mb-4 last:mb-0">
                   <div className="flex justify-between mb-2">
@@ -237,13 +309,93 @@ export default function Dashboard() {
                 <h2 className="text-xl font-bold text-gray-900">Recent Expenses</h2>
                 <p className="text-gray-600 text-sm">Latest transactions</p>
               </div>
-              <div className="flex items-center space-x-2">
-                <button className="flex items-center px-3 py-1 text-sm text-gray-600 hover:text-gray-900 border border-gray-300 rounded-lg hover:bg-gray-50">
-                  <Download className="w-4 h-4 mr-1" />
-                  Export
-                </button>
+
+              {/* --- SWAPPED CONTROLS: Filter popover first, then All Categories select --- */}
+              <div className="flex items-center space-x-2" ref={filterAreaRef}>
+                {/* Filter popover (opens on click) */}
                 <div className="relative">
-                  <select
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setShowFilterPanel(prev => !prev);
+                      setPanelCategory(filter || "all");
+                    }}
+                    className="flex items-center text-sm text-gray-600 hover:text-gray-900 px-3 py-1 rounded"
+                  >
+                    <Filter className="w-4 h-4 mr-1" />
+                    Filter
+                  </button>
+
+                  {showFilterPanel && (
+                    <div
+                      onClick={(e) => e.stopPropagation()}
+                      className="absolute right-0 mt-2 w-72 bg-white border border-gray-200 rounded-lg shadow-lg p-4 z-50"
+                    >
+                      <div className="space-y-3">
+                        <div>
+                          <label className="block text-xs text-gray-500 mb-1">Category</label>
+                          <select
+                            value={panelCategory}
+                            onChange={(e) => setPanelCategory(e.target.value)}
+                            className="w-full px-2 py-1 border rounded text-sm"
+                          >
+                            <option value="all">All</option>
+                            {categoryList().map(cat => (
+                              <option key={cat} value={cat} className="capitalize">{cat}</option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-xs text-gray-500 mb-1">From</label>
+                          <input
+                            type="date"
+                            value={panelStartDate}
+                            onChange={(e) => setPanelStartDate(e.target.value)}
+                            className="w-full px-2 py-1 border rounded text-sm"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-xs text-gray-500 mb-1">To</label>
+                          <input
+                            type="date"
+                            value={panelEndDate}
+                            onChange={(e) => setPanelEndDate(e.target.value)}
+                            className="w-full px-2 py-1 border rounded text-sm"
+                          />
+                        </div>
+
+                        <div className="flex justify-between mt-2">
+                          <button
+                            onClick={clearPanelFilters}
+                            className="px-3 py-1 text-sm bg-white border rounded"
+                          >
+                            Clear
+                          </button>
+                          <div className="flex space-x-2">
+                            <button
+                              onClick={() => setShowFilterPanel(false)}
+                              className="px-3 py-1 text-sm border rounded"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              onClick={applyPanelFilters}
+                              className="px-3 py-1 bg-blue-600 text-white rounded text-sm"
+                            >
+                              Apply
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* All Categories select (quick filter) */}
+                <div className="relative">
+                  {/* <select
                     value={filter}
                     onChange={(e) => setFilter(e.target.value)}
                     className="appearance-none px-3 py-1 text-sm border border-gray-300 rounded-lg bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 pr-8"
@@ -252,13 +404,40 @@ export default function Dashboard() {
                     {analytics.categoryWise && Object.keys(analytics.categoryWise).map(cat => (
                       <option key={cat} value={cat} className="capitalize">{cat}</option>
                     ))}
-                  </select>
-                  <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-700">
+                  </select> */}
+                  {/* <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-700">
                     <svg className="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">
                       <path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z"/>
                     </svg>
-                  </div>
+                  </div> */}
                 </div>
+
+                {/* Export button */}
+                <button
+                  onClick={() => {
+                    const rows = filteredExpenses.map(e => ({
+                      date: e.date,
+                      category: e.category,
+                      amount: e.amount,
+                      note: e.note || e.description || ""
+                    }));
+                    const csv = [
+                      ["date","category","amount","note"],
+                      ...rows.map(r => [r.date, r.category, r.amount, `"${(r.note || "").replace(/"/g, '""')}"`])
+                    ].map(r => r.join(",")).join("\n");
+                    const blob = new Blob([csv], { type: "text/csv" });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = "expenses.csv";
+                    a.click();
+                    URL.revokeObjectURL(url);
+                  }}
+                  className="flex items-center px-3 py-1 text-sm text-gray-600 hover:text-gray-900 border border-gray-300 rounded-lg hover:bg-gray-50"
+                >
+                  <Download className="w-4 h-4 mr-1" />
+                  Export
+                </button>
               </div>
             </div>
 
@@ -321,11 +500,10 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Right Sidebar - Quick Stats */}
+        {/* Right Sidebar */}
         <div className="lg:col-span-1">
           <div className="bg-white rounded-xl shadow-md border border-gray-100 p-6 sticky top-6">
             <h2 className="text-xl font-bold text-gray-900 mb-6">Quick Insights</h2>
-            
             <div className="space-y-6">
               <div>
                 <h3 className="text-sm font-medium text-gray-500 mb-3">Spending Trend</h3>
@@ -396,7 +574,10 @@ export default function Dashboard() {
       </div>
 
       {/* Modal */}
-      {showAdd && <AddExpenseModal onClose={() => setShowAdd(false)} onAdd={loadData} />}
+      {showAdd && <AddExpenseModal onClose={() => setShowAdd(false)} onAdd={() => {
+        loadData({ category: filter !== "all" ? filter : undefined });
+        setShowAdd(false);
+      }} />}
     </div>
   );
 }
